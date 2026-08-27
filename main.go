@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/hilubabz/GO-LANG/internal/auth"
 	"github.com/hilubabz/GO-LANG/internal/database"
 	"github.com/hilubabz/GO-LANG/middleware"
 	"github.com/joho/godotenv"
@@ -47,6 +48,7 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request){
 	type userRequest struct{
+		Password string `json:"password"`
 		Email string `json:"email"`
 	}
 	user := userRequest{}
@@ -55,7 +57,14 @@ func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request){
 		respondWithError(w, http.StatusBadRequest, "Unable to parse body")
 		return
 	}
-	userRes, insError := cfg.dbQueries.CreateUser(r.Context(), user.Email)
+	hashedPassword, passwordError := auth.HashPassword(user.Password)
+	if passwordError != nil{
+		respondWithError(w, http.StatusBadRequest, passwordError.Error())
+	}
+	userRes, insError := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+		Email: user.Email,
+		HashedPassword: hashedPassword,
+	})
 	if insError!=nil{
 		respondWithError(w, http.StatusBadRequest, "Failed to add user")
 		return
@@ -198,6 +207,46 @@ func (cfg *apiConfig) getChirpById(w http.ResponseWriter, r *http.Request){
 	respondWithJSON(w, http.StatusOK, chirpResponse)
 }
 
+func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request){
+	type loginRequest struct{
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	loginData := loginRequest{}
+	err:=json.NewDecoder(r.Body).Decode(&loginData)
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Unable to parse json")
+		return
+	}
+	userData, userError := cfg.dbQueries.GetUserByEmail(r.Context(),loginData.Email)
+	if userError!=nil{
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+	passwordMatch, passwordError := auth.CheckPasswordHash(loginData.Password, userData.HashedPassword)
+	if passwordError != nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to compare password")
+		return
+	}
+	if !passwordMatch{
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+	type loginResponse struct{
+		ID uuid.UUID `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	loginRes := loginResponse{
+		ID: userData.ID,
+		CreatedAt: userData.CreatedAt.GoString(),
+		UpdatedAt: userData.UpdatedAt.GoString(),
+		Email: userData.Email,
+	}
+	respondWithJSON(w, http.StatusOK, loginRes)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -237,6 +286,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiMiddleware.validateChirp)
 	mux.HandleFunc("GET /api/chirps", apiMiddleware.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpId}", apiMiddleware.getChirpById)
+	mux.HandleFunc("POST /api/login", apiMiddleware.login)
 
 	s := &http.Server{
 		Addr:           ":8080",
