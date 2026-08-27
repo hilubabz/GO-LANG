@@ -143,6 +143,33 @@ func (cfg *apiConfig) validateChirp(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusCreated, response)
 }
 
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request){
+	chirpsData, err := cfg.dbQueries.GetChirps(r.Context())
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to fetch chirps")
+	}
+	type chirpsResponseType struct{
+		ID uuid.UUID `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body string `json:"body"`
+		UserId uuid.UUID `json:"user_id"`
+	}
+	chirpsRes := []chirpsResponseType{}
+
+	for _, chirp := range chirpsData {
+		chirpsRes = append(chirpsRes, chirpsResponseType{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt.GoString(),
+			UpdatedAt: chirp.UpdatedAt.GoString(),
+			Body:      chirp.Body,
+			UserId:    chirp.UserID,
+		})
+	}
+
+	respondWithJSON(w, http.StatusOK, chirpsRes)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -180,6 +207,7 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", apiMiddleware.resetHandler)
 	mux.HandleFunc("POST /api/users", apiMiddleware.addUser)
 	mux.HandleFunc("POST /api/chirps", apiMiddleware.validateChirp)
+	mux.HandleFunc("GET /api/chirps", apiMiddleware.getChirps)
 
 	s := &http.Server{
 		Addr:           ":8080",
