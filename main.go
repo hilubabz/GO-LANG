@@ -20,6 +20,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -42,12 +43,49 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 </html>`, hits)))
 }
 
+func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request){
+	type userRequest struct{
+		Email string `json:"email"`
+	}
+	user := userRequest{}
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Unable to parse body")
+		return
+	}
+	userRes, insError := cfg.dbQueries.CreateUser(r.Context(), user.Email)
+	if insError!=nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to add user")
+		return
+	}
+	type userResponse struct{
+		ID string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	response := userResponse{
+		ID: userRes.ID.String(),
+		CreatedAt: userRes.CreatedAt.GoString(),
+		UpdatedAt: userRes.UpdatedAt.GoString(),
+		Email: userRes.Email,
+	}
+	respondWithJSON(w, http.StatusCreated, response)
+}
+
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform!="dev"{
+		respondWithError(w, http.StatusForbidden, "This can only be accessed in dev mode")
+	}
+	err:=cfg.dbQueries.DeleteUser(r.Context())
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to delete users")
+	}
 	cfg.fileserverHits.Store(0)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Hits: 0"))
+	w.Write([]byte("User deleted successfully"))
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +135,7 @@ func main() {
 
 	apiMiddleware := apiConfig{
 		dbQueries: dbQueries,
+		platform: os.Getenv("PLATFORM"),
 	}
 
 	mux := http.NewServeMux()
@@ -120,6 +159,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiMiddleware.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiMiddleware.resetHandler)
 	mux.HandleFunc("POST /api/validate_chirp", validateChirp)
+	mux.HandleFunc("POST /api/users", apiMiddleware.addUser)
 
 	s := &http.Server{
 		Addr:           ":8080",
