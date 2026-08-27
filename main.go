@@ -87,10 +87,12 @@ func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request){
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	if cfg.platform!="dev"{
 		respondWithError(w, http.StatusForbidden, "This can only be accessed in dev mode")
+		return 
 	}
 	err:=cfg.dbQueries.DeleteUser(r.Context())
 	if err!=nil{
 		respondWithError(w, http.StatusBadRequest, "Failed to delete users")
+		return
 	}
 	cfg.fileserverHits.Store(0)
 
@@ -225,7 +227,6 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
 		Email   string `json:"email"`
 		Password string `json:"password"`
-		Expires int    `json:"expires_in_seconds"`
 	}
 
 	loginData := loginRequest{}
@@ -259,10 +260,6 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if loginData.Expires > 60*60 {
-		loginData.Expires = 60 * 60
-	}
-
 	key, keyExists := os.LookupEnv("JWT_SECRET")
 	if !keyExists {
 		respondWithError(w, http.StatusInternalServerError, "JWT secret not configured")
@@ -272,10 +269,21 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	token, tokenErr := auth.MakeJWT(
 		userData.ID,
 		key,
-		time.Duration(loginData.Expires)*time.Second,
 	)
 	if tokenErr != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create token")
+		return
+	}
+	refreshToken := auth.MakeRefreshToken()
+
+	refToken, refError := cfg.dbQueries.AddRefreshToken(r.Context(),database.AddRefreshTokenParams{
+		Token: refreshToken,
+		UserID: userData.ID,
+		ExpiresAt: time.Now().Add(time.Duration(24*60)*time.Hour),
+	})
+
+	if refError!=nil{
+		respondWithError(w, http.StatusBadRequest, refError.Error())
 		return
 	}
 
@@ -285,6 +293,7 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt string    `json:"updated_at"`
 		Email     string    `json:"email"`
 		Token     string    `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 	loginRes := loginResponse{
@@ -293,9 +302,54 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: userData.UpdatedAt.GoString(),
 		Email:     userData.Email,
 		Token:     token,
+		RefreshToken: refToken.Token,
 	}
 
 	respondWithJSON(w, http.StatusOK, loginRes)
+}
+
+func (cfg *apiConfig) refresh(w http.ResponseWriter, r *http.Request){
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err!=nil{
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	validRefreshToken, validErr := cfg.dbQueries.GetRefreshToken(r.Context(),refreshToken)
+	if validErr != nil{
+		respondWithError(w, http.StatusUnauthorized, validErr.Error())
+		return
+	}
+	key, _ := os.LookupEnv("JWT_SECRET")
+	accessToken, tokenErr := auth.MakeJWT(validRefreshToken.UserID, key)
+	if tokenErr!=nil{
+		respondWithError(w, http.StatusBadRequest, tokenErr.Error())
+	}
+	type refreshResponseType struct{
+		Token string `json:"token"`
+	}
+	refreshRes:=refreshResponseType{
+		Token: accessToken,
+	}
+	respondWithJSON(w, http.StatusOK, refreshRes)
+}
+
+func (cfg *apiConfig) revoke(w http.ResponseWriter, r *http.Request){
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err!=nil{
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	validRefreshToken, validErr := cfg.dbQueries.GetRefreshToken(r.Context(),refreshToken)
+	if validErr != nil{
+		respondWithError(w, http.StatusUnauthorized, validErr.Error())
+		return
+	}
+	_, revokeErr := cfg.dbQueries.RevokeRefreshToken(r.Context(),validRefreshToken.Token)
+	if revokeErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, revokeErr.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -338,6 +392,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiMiddleware.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpId}", apiMiddleware.getChirpById)
 	mux.HandleFunc("POST /api/login", apiMiddleware.login)
+	mux.HandleFunc("POST /api/refresh", apiMiddleware.refresh)
+	mux.HandleFunc("POST /api/revoke", apiMiddleware.revoke)
 
 	s := &http.Server{
 		Addr:           ":8080",
