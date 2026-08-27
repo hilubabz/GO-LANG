@@ -1,0 +1,7 @@
+goose postgres "postgres://postgres:hilubabz@localhost:5432/chirpy" down
+goose postgres "postgres://postgres:hilubabz@localhost:5432/chirpy" up
+
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+sqlc generate
+
+go get github.com/joho/godotenv

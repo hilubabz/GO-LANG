@@ -1,18 +1,25 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/hilubabz/GO-LANG/internal/database"
 	"github.com/hilubabz/GO-LANG/middleware"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -60,20 +67,37 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 		return
 	}
+	validator.Body=strings.ReplaceAll(validator.Body,"kerfuffle","****")
+	validator.Body=strings.ReplaceAll(validator.Body,"Kerfuffle","****")
+	validator.Body=strings.ReplaceAll(validator.Body,"fornax","****")
+	validator.Body=strings.ReplaceAll(validator.Body,"Fornax","****")
+	validator.Body=strings.ReplaceAll(validator.Body,"sharbert","****")
+	validator.Body=strings.ReplaceAll(validator.Body,"Sharbert","****")
 
 	type validateChirpResponse struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	response := validateChirpResponse{
-		Valid: true,
+		CleanedBody: validator.Body,
 	}
 
 	respondWithJSON(w, http.StatusOK, response)
 }
 
 func main() {
-	var apiMiddleware apiConfig
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err!=nil{
+		log.Println("Error connecting to database")
+		log.Fatal("Error connecting to database")
+	}
+	dbQueries := database.New(db)
+
+	apiMiddleware := apiConfig{
+		dbQueries: dbQueries,
+	}
 
 	mux := http.NewServeMux()
 
