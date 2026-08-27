@@ -100,9 +100,23 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) validateChirp(w http.ResponseWriter, r *http.Request) {
+	token, tokenErr := auth.GetBearerToken(r.Header)
+	if tokenErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	key, keyErr := os.LookupEnv("JWT_SECRET")
+	if !keyErr{
+		respondWithError(w, http.StatusBadRequest, "Key not found")
+		return
+	}
+	userId, validErr := auth.ValidateJWT(token, key)
+	if validErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, validErr.Error())
+		return
+	}
 	type validateChirpBody struct {
 		Body string `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
 	}
 
 	validator := validateChirpBody{}
@@ -126,7 +140,7 @@ func (cfg *apiConfig) validateChirp(w http.ResponseWriter, r *http.Request) {
 
 	chirpData, addError := cfg.dbQueries.AddChirp(r.Context(), database.AddChirpParams{
 		Body: validator.Body,
-		UserID: validator.UserId,
+		UserID: userId,
 	})
 
 	if addError != nil{
@@ -207,43 +221,80 @@ func (cfg *apiConfig) getChirpById(w http.ResponseWriter, r *http.Request){
 	respondWithJSON(w, http.StatusOK, chirpResponse)
 }
 
-func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request){
-	type loginRequest struct{
-		Email string `json:"email"`
+func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
+	type loginRequest struct {
+		Email   string `json:"email"`
 		Password string `json:"password"`
+		Expires int    `json:"expires_in_seconds"`
 	}
+
 	loginData := loginRequest{}
-	err:=json.NewDecoder(r.Body).Decode(&loginData)
-	if err!=nil{
+
+	err := json.NewDecoder(r.Body).Decode(&loginData)
+	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse json")
 		return
 	}
-	userData, userError := cfg.dbQueries.GetUserByEmail(r.Context(),loginData.Email)
-	if userError!=nil{
+
+	userData, userError := cfg.dbQueries.GetUserByEmail(
+		r.Context(),
+		loginData.Email,
+	)
+	if userError != nil {
 		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 		return
 	}
-	passwordMatch, passwordError := auth.CheckPasswordHash(loginData.Password, userData.HashedPassword)
-	if passwordError != nil{
+
+	passwordMatch, passwordError := auth.CheckPasswordHash(
+		loginData.Password,
+		userData.HashedPassword,
+	)
+	if passwordError != nil {
 		respondWithError(w, http.StatusBadRequest, "Failed to compare password")
 		return
 	}
-	if !passwordMatch{
+
+	if !passwordMatch {
 		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 		return
 	}
-	type loginResponse struct{
-		ID uuid.UUID `json:"id"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Email string `json:"email"`
+
+	if loginData.Expires > 60*60 {
+		loginData.Expires = 60 * 60
 	}
+
+	key, keyExists := os.LookupEnv("JWT_SECRET")
+	if !keyExists {
+		respondWithError(w, http.StatusInternalServerError, "JWT secret not configured")
+		return
+	}
+
+	token, tokenErr := auth.MakeJWT(
+		userData.ID,
+		key,
+		time.Duration(loginData.Expires)*time.Second,
+	)
+	if tokenErr != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create token")
+		return
+	}
+
+	type loginResponse struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt string    `json:"created_at"`
+		UpdatedAt string    `json:"updated_at"`
+		Email     string    `json:"email"`
+		Token     string    `json:"token"`
+	}
+
 	loginRes := loginResponse{
-		ID: userData.ID,
+		ID:        userData.ID,
 		CreatedAt: userData.CreatedAt.GoString(),
 		UpdatedAt: userData.UpdatedAt.GoString(),
-		Email: userData.Email,
+		Email:     userData.Email,
+		Token:     token,
 	}
+
 	respondWithJSON(w, http.StatusOK, loginRes)
 }
 
