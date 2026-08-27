@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/hilubabz/GO-LANG/internal/database"
 	"github.com/hilubabz/GO-LANG/middleware"
 	"github.com/joho/godotenv"
@@ -88,9 +90,10 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("User deleted successfully"))
 }
 
-func validateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) validateChirp(w http.ResponseWriter, r *http.Request) {
 	type validateChirpBody struct {
 		Body string `json:"body"`
+		UserId uuid.UUID `json:"user_id"`
 	}
 
 	validator := validateChirpBody{}
@@ -112,15 +115,32 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 	validator.Body=strings.ReplaceAll(validator.Body,"sharbert","****")
 	validator.Body=strings.ReplaceAll(validator.Body,"Sharbert","****")
 
+	chirpData, addError := cfg.dbQueries.AddChirp(r.Context(), database.AddChirpParams{
+		Body: validator.Body,
+		UserID: validator.UserId,
+	})
+
+	if addError != nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to add chirp")
+	}
+
 	type validateChirpResponse struct {
-		CleanedBody string `json:"cleaned_body"`
+		ID uuid.UUID `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body string `json:"body"`
+		UserId uuid.UUID `json:"user_id"`
 	}
 
 	response := validateChirpResponse{
-		CleanedBody: validator.Body,
+		ID: chirpData.ID,
+		CreatedAt: chirpData.CreatedAt.GoString(),
+		UpdatedAt: chirpData.UpdatedAt.GoString(),
+		Body: chirpData.Body,
+		UserId: chirpData.UserID,
 	}
 
-	respondWithJSON(w, http.StatusOK, response)
+	respondWithJSON(w, http.StatusCreated, response)
 }
 
 func main() {
@@ -158,8 +178,8 @@ func main() {
 
 	mux.HandleFunc("GET /admin/metrics", apiMiddleware.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiMiddleware.resetHandler)
-	mux.HandleFunc("POST /api/validate_chirp", validateChirp)
 	mux.HandleFunc("POST /api/users", apiMiddleware.addUser)
+	mux.HandleFunc("POST /api/chirps", apiMiddleware.validateChirp)
 
 	s := &http.Server{
 		Addr:           ":8080",
