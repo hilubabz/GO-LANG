@@ -171,21 +171,46 @@ func (cfg *apiConfig) validateChirp(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusCreated, response)
 }
 
-func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request){
-	chirpsData, err := cfg.dbQueries.GetChirps(r.Context())
-	if err!=nil{
-		respondWithError(w, http.StatusBadRequest, "Failed to fetch chirps")
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
+	authorIDStr := r.URL.Query().Get("author_id")
+
+	chirpData := []database.Chirp{}
+
+	if authorIDStr != "" {
+		authorID, err := uuid.Parse(authorIDStr)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid author_id")
+			return
+		}
+
+		chirpDatas, err := cfg.dbQueries.GetChirpByAuthorId(r.Context(), authorID)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+			return
+		}
+
+		chirpData = chirpDatas
+	} else {
+		chirpsDatas, err := cfg.dbQueries.GetChirps(r.Context())
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+			return
+		}
+
+		chirpData = chirpsDatas
 	}
-	type chirpsResponseType struct{
-		ID uuid.UUID `json:"id"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Body string `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
+
+	type chirpsResponseType struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt string    `json:"created_at"`
+		UpdatedAt string    `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserId    uuid.UUID `json:"user_id"`
 	}
+
 	chirpsRes := []chirpsResponseType{}
 
-	for _, chirp := range chirpsData {
+	for _, chirp := range chirpData {
 		chirpsRes = append(chirpsRes, chirpsResponseType{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt.GoString(),
