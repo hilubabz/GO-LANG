@@ -352,6 +352,57 @@ func (cfg *apiConfig) revoke(w http.ResponseWriter, r *http.Request){
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request){
+	type updateUserRequest struct{
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	userReq:=updateUserRequest{}
+	err:=json.NewDecoder(r.Body).Decode(&userReq)
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to parse request")
+		return
+	}
+	accessToken, tokenErr := auth.GetBearerToken(r.Header)
+	if tokenErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, tokenErr.Error())
+		return
+	}
+	key,_ :=os.LookupEnv("JWT_SECRET")
+	userId, validErr := auth.ValidateJWT(accessToken,key)
+	if validErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, validErr.Error())
+		return
+	}
+	hashedPassword, hasErr := auth.HashPassword(userReq.Password)
+	if hasErr!=nil{
+		respondWithError(w, http.StatusBadRequest, hasErr.Error())
+		return
+	}
+	userRes, updateErr := cfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+		Email: userReq.Email,
+		HashedPassword: hashedPassword,
+		ID: userId,
+	})
+	if updateErr!=nil{
+		respondWithError(w, http.StatusBadRequest, updateErr.Error())
+		return
+	}
+	type userResponse struct{
+		ID string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email string `json:"email"`
+	}
+	response := userResponse{
+		ID: userRes.ID.String(),
+		CreatedAt: userRes.CreatedAt.GoString(),
+		UpdatedAt: userRes.UpdatedAt.GoString(),
+		Email: userRes.Email,
+	}
+	respondWithJSON(w, http.StatusOK, response)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -394,6 +445,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiMiddleware.login)
 	mux.HandleFunc("POST /api/refresh", apiMiddleware.refresh)
 	mux.HandleFunc("POST /api/revoke", apiMiddleware.revoke)
+	mux.HandleFunc("PUT /api/users", apiMiddleware.updateUser)
 
 	s := &http.Server{
 		Addr:           ":8080",
