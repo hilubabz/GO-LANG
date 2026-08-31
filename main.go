@@ -24,6 +24,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform string
+	polkaKey string	
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -74,12 +75,14 @@ func (cfg *apiConfig) addUser(w http.ResponseWriter, r *http.Request){
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 		Email string `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 	response := userResponse{
 		ID: userRes.ID.String(),
 		CreatedAt: userRes.CreatedAt.GoString(),
 		UpdatedAt: userRes.UpdatedAt.GoString(),
 		Email: userRes.Email,
+		IsChirpyRed: userRes.IsChirpyRed,
 	}
 	respondWithJSON(w, http.StatusCreated, response)
 }
@@ -292,6 +295,7 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string    `json:"created_at"`
 		UpdatedAt string    `json:"updated_at"`
 		Email     string    `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 		Token     string    `json:"token"`
 		RefreshToken string `json:"refresh_token"`
 	}
@@ -301,6 +305,7 @@ func (cfg *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: userData.CreatedAt.GoString(),
 		UpdatedAt: userData.UpdatedAt.GoString(),
 		Email:     userData.Email,
+		IsChirpyRed: userData.IsChirpyRed,
 		Token:     token,
 		RefreshToken: refToken.Token,
 	}
@@ -393,12 +398,14 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request){
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 		Email string `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 	response := userResponse{
 		ID: userRes.ID.String(),
 		CreatedAt: userRes.CreatedAt.GoString(),
 		UpdatedAt: userRes.UpdatedAt.GoString(),
 		Email: userRes.Email,
+		IsChirpyRed: userRes.IsChirpyRed,
 	}
 	respondWithJSON(w, http.StatusOK, response)
 }
@@ -437,6 +444,42 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request){
 	respondWithJSON(w, http.StatusNoContent, struct{}{})
 }
 
+func (cfg *apiConfig) webhook(w http.ResponseWriter, r *http.Request){
+	apiKey := os.Getenv("POLKA_KEY")
+	headerApiKey, headerErr := auth.GetAPIKey(r.Header)
+	if headerErr != nil{
+		respondWithError(w, http.StatusUnauthorized, headerErr.Error())
+		return
+	}
+	if apiKey != headerApiKey{
+		respondWithError(w, http.StatusUnauthorized, "Invalid API Key")
+		return
+	}
+	type dataType struct{
+		UserId uuid.UUID `json:"user_id"`
+	}
+	type webhookReq struct{
+		Event string `json:"event"`
+		Data dataType `json:"data"`
+	}
+	apiReq := webhookReq{}
+	err := json.NewDecoder(r.Body).Decode(&apiReq)
+	if err!=nil{
+		respondWithError(w, http.StatusBadRequest, "Failed to parse json")
+		return
+	}
+	if apiReq.Event != "user.upgraded"{
+		respondWithJSON(w, http.StatusNoContent, struct{}{})
+		return
+	}
+	_, apiErr := cfg.dbQueries.UpdateUserToChirpyRed(r.Context(),apiReq.Data.UserId)
+	if apiErr != nil{
+		respondWithError(w, http.StatusNotFound, apiErr.Error())
+		return
+	}
+	respondWithJSON(w, http.StatusNoContent, struct{}{})
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -450,6 +493,7 @@ func main() {
 	apiMiddleware := apiConfig{
 		dbQueries: dbQueries,
 		platform: os.Getenv("PLATFORM"),
+		polkaKey: os.Getenv("POLKA_KEY"),
 	}
 
 	mux := http.NewServeMux()
@@ -481,6 +525,7 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", apiMiddleware.revoke)
 	mux.HandleFunc("PUT /api/users", apiMiddleware.updateUser)
 	mux.HandleFunc("DELETE /api/chirps/{chirpId}", apiMiddleware.deleteChirp)
+	mux.HandleFunc("POST /api/polka/webhooks", apiMiddleware.webhook)
 
 	s := &http.Server{
 		Addr:           ":8080",
