@@ -403,6 +403,40 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request){
 	respondWithJSON(w, http.StatusOK, response)
 }
 
+func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request){
+	chirpId := r.PathValue("chirpId")
+	chirpUuid, parseError := uuid.Parse(chirpId)
+	if parseError != nil{
+		respondWithError(w, http.StatusBadRequest, "Could not parsed chirp id")
+	}
+	accessToken, tokenErr := auth.GetBearerToken(r.Header)
+	if tokenErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, tokenErr.Error())
+		return
+	}
+	key,_ :=os.LookupEnv("JWT_SECRET")
+	userId, validErr := auth.ValidateJWT(accessToken,key)
+	if validErr!=nil{
+		respondWithError(w, http.StatusUnauthorized, validErr.Error())
+		return
+	}
+	chirpData, chirpErr := cfg.dbQueries.GetChirpById(r.Context(),chirpUuid)
+	if chirpErr != nil{
+		respondWithError(w, http.StatusNotFound,chirpErr.Error())
+		return
+	}
+	if chirpData.UserID != userId{
+		respondWithError(w, http.StatusForbidden, "You are not the owner of this chirp")
+		return
+	}
+	deleteErr := cfg.dbQueries.DeleteChirp(r.Context(), chirpUuid)
+	if deleteErr!=nil{
+		respondWithError(w, http.StatusBadRequest, deleteErr.Error())
+		return
+	}
+	respondWithJSON(w, http.StatusNoContent, struct{}{})
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -446,6 +480,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", apiMiddleware.refresh)
 	mux.HandleFunc("POST /api/revoke", apiMiddleware.revoke)
 	mux.HandleFunc("PUT /api/users", apiMiddleware.updateUser)
+	mux.HandleFunc("DELETE /api/chirps/{chirpId}", apiMiddleware.deleteChirp)
 
 	s := &http.Server{
 		Addr:           ":8080",
